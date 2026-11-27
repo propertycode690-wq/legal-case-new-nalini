@@ -31,9 +31,19 @@ function writeJsonFile(filePath, data) {
   }
 }
 
-// Helper function to execute query
+// Table name normalization map to guarantee all queries match lowercase database tables on Linux/Railway
+const KNOWN_TABLES = [
+  'clientmaster', 'casemaster', 'casenext', 'billing', 'payment',
+  'expenseheadmaster', 'expense', 'waitinglist', 'announcements', 'clientinformation'
+]
+const TABLE_REGEX = new RegExp(`\\b(${KNOWN_TABLES.join('|')})\\b`, 'gi')
+
+// Helper function to execute query safely across Windows and Linux
 async function query(sql, params = []) {
-  const [rows] = await db.query(sql, params)
+  const normalizedSql = typeof sql === 'string'
+    ? sql.replace(TABLE_REGEX, (match) => match.toLowerCase())
+    : sql
+  const [rows] = await db.query(normalizedSql, params)
   return rows
 }
 
@@ -42,7 +52,7 @@ async function query(sql, params = []) {
 // =====================================================================
 router.get('/clients', async (req, res) => {
   try {
-    const rows = await query('SELECT * FROM ClientMaster ORDER BY ID DESC')
+    const rows = await query('SELECT * FROM clientmaster ORDER BY ID DESC')
     const clients = rows.map((r) => ({
       id: String(r.ID),
       name: r.ClientName || '',
@@ -67,7 +77,7 @@ router.post('/clients', async (req, res) => {
   try {
     const { name, relation, address, phone, referenceName, referencePhone, fees, date } = req.body
     const result = await query(
-      'INSERT INTO ClientMaster (ClientName, So, Address, PhoneNo, RefName, RefPhNo, ConFees, ClientDate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO clientmaster (ClientName, So, Address, PhoneNo, RefName, RefPhNo, ConFees, ClientDate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [name || '', relation || '', address || '', phone || '', referenceName || '', referencePhone || '', Number(fees || 0), date || '']
     )
     const newClient = {
@@ -93,7 +103,7 @@ router.put('/clients/:id', async (req, res) => {
     const { id } = req.params
     const { name, relation, address, phone, referenceName, referencePhone, fees, date } = req.body
     await query(
-      'UPDATE ClientMaster SET ClientName = ?, So = ?, Address = ?, PhoneNo = ?, RefName = ?, RefPhNo = ?, ConFees = ?, ClientDate = ? WHERE ID = ?',
+      'UPDATE clientmaster SET ClientName = ?, So = ?, Address = ?, PhoneNo = ?, RefName = ?, RefPhNo = ?, ConFees = ?, ClientDate = ? WHERE ID = ?',
       [name || '', relation || '', address || '', phone || '', referenceName || '', referencePhone || '', Number(fees || 0), date || '', id]
     )
     res.json({ id, name, relation, address, phone, referenceName, referencePhone, fees: Number(fees || 0), date })
@@ -106,7 +116,7 @@ router.put('/clients/:id', async (req, res) => {
 router.delete('/clients/:id', async (req, res) => {
   try {
     const { id } = req.params
-    await query('DELETE FROM ClientMaster WHERE ID = ?', [id])
+    await query('DELETE FROM clientmaster WHERE ID = ?', [id])
     res.json({ success: true, id })
   } catch (err) {
     console.error('Error deleting client:', err)
@@ -121,11 +131,11 @@ router.get('/cases', async (req, res) => {
   try {
     const sql = `
       SELECT c.*, cl.ClientName, cl.PhoneNo as ClientPhone,
-        (SELECT NextDate FROM CaseNext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextDate,
-        (SELECT cn.For FROM CaseNext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextFor,
-        (SELECT cn.CourtName FROM CaseNext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextCourt
-      FROM CaseMaster c
-      LEFT JOIN ClientMaster cl ON c.ClientId = cl.ID
+        (SELECT NextDate FROM casenext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextDate,
+        (SELECT cn.For FROM casenext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextFor,
+        (SELECT cn.CourtName FROM casenext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextCourt
+      FROM casemaster c
+      LEFT JOIN clientmaster cl ON c.ClientId = cl.ID
       ORDER BY c.ID DESC
     `
     const rows = await query(sql)
@@ -170,7 +180,7 @@ router.post('/cases/bulk', async (req, res) => {
     for (const c of cases) {
       const parsedClientId = c.clientId ? parseInt(String(c.clientId).replace(/\D/g, ''), 10) || null : null
       const result = await query(
-        `INSERT INTO CaseMaster 
+        `INSERT INTO casemaster 
         (ClientId, CaseNo, PsCaseNo, CourtName, StartDate, PPName, PsCaseDate, RackNo, RoomNo, Us, \`For\`, LcName, VersusName, AdAdvName, CaseDetails) 
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
@@ -182,7 +192,7 @@ router.post('/cases/bulk', async (req, res) => {
       const caseId = result.insertId
       if (c.nextDate) {
         await query(
-          `INSERT INTO CaseNext (CaseId, NextDate, \`For\`, CourtName, PPName) VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO casenext (CaseId, NextDate, \`For\`, CourtName, PPName) VALUES (?, ?, ?, ?, ?)`,
           [caseId, c.nextDate, c.nextFor || c.caseFor || c.purpose || '', c.courtName || '', c.ppName || '']
         )
       }
@@ -207,7 +217,7 @@ router.post('/cases', async (req, res) => {
     const parsedClientId = clientId ? parseInt(String(clientId).replace(/\D/g, ''), 10) || null : null
 
     const result = await query(
-      `INSERT INTO CaseMaster 
+      `INSERT INTO casemaster 
       (ClientId, CaseNo, PsCaseNo, CourtName, StartDate, PPName, PsCaseDate, RackNo, RoomNo, Us, \`For\`, LcName, VersusName, AdAdvName, CaseDetails) 
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -219,10 +229,10 @@ router.post('/cases', async (req, res) => {
 
     const caseId = result.insertId
 
-    // Insert initial next date in CaseNext if provided
+    // Insert initial next date in casenext if provided
     if (nextDate) {
       await query(
-        `INSERT INTO CaseNext (CaseId, NextDate, \`For\`, CourtName, PPName) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO casenext (CaseId, NextDate, \`For\`, CourtName, PPName) VALUES (?, ?, ?, ?, ?)`,
         [caseId, nextDate, nextFor || caseFor || '', courtName || '', ppName || '']
       )
     }
@@ -256,7 +266,7 @@ router.post('/cases', async (req, res) => {
 router.put('/cases/:id', async (req, res) => {
   try {
     const { id } = req.params
-    const [existing] = await query('SELECT * FROM CaseMaster WHERE ID = ?', [id])
+    const [existing] = await query('SELECT * FROM casemaster WHERE ID = ?', [id])
     if (!existing) {
       return res.status(404).json({ error: 'Case not found' })
     }
@@ -281,7 +291,7 @@ router.put('/cases/:id', async (req, res) => {
     const caseDetailsVal = req.body.caseDetails !== undefined ? req.body.caseDetails : (req.body.notes !== undefined ? req.body.notes : existing.CaseDetails)
 
     await query(
-      `UPDATE CaseMaster SET 
+      `UPDATE casemaster SET 
       ClientId = ?, CaseNo = ?, PsCaseNo = ?, CourtName = ?, StartDate = ?, PPName = ?, 
       PsCaseDate = ?, RackNo = ?, RoomNo = ?, Us = ?, \`For\` = ?, LcName = ?, 
       VersusName = ?, AdAdvName = ?, CaseDetails = ?
@@ -298,7 +308,7 @@ router.put('/cases/:id', async (req, res) => {
     const nextForVal = req.body.nextFor || req.body.purpose || req.body.caseFor || req.body.for || forVal
     if (nextDateVal) {
       await query(
-        `INSERT INTO CaseNext (CaseId, NextDate, \`For\`, CourtName, PPName) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO casenext (CaseId, NextDate, \`For\`, CourtName, PPName) VALUES (?, ?, ?, ?, ?)`,
         [id, nextDateVal, nextForVal || '', courtNameVal || '', ppNameVal || '']
       )
     }
@@ -332,8 +342,8 @@ router.put('/cases/:id', async (req, res) => {
 router.delete('/cases/:id', async (req, res) => {
   try {
     const { id } = req.params
-    await query('DELETE FROM CaseNext WHERE CaseId = ?', [id])
-    await query('DELETE FROM CaseMaster WHERE ID = ?', [id])
+    await query('DELETE FROM casenext WHERE CaseId = ?', [id])
+    await query('DELETE FROM casemaster WHERE ID = ?', [id])
     res.json({ success: true, id })
   } catch (err) {
     console.error('Error deleting case:', err)
@@ -348,9 +358,9 @@ router.get('/reminders', async (req, res) => {
   try {
     const sql = `
       SELECT cn.*, c.CaseNo, c.VersusName, cl.ClientName, cl.PhoneNo
-      FROM CaseNext cn
-      LEFT JOIN CaseMaster c ON cn.CaseId = c.ID
-      LEFT JOIN ClientMaster cl ON c.ClientId = cl.ID
+      FROM casenext cn
+      LEFT JOIN casemaster c ON cn.CaseId = c.ID
+      LEFT JOIN clientmaster cl ON c.ClientId = cl.ID
       ORDER BY cn.NextDate ASC
     `
     const rows = await query(sql)
@@ -390,8 +400,8 @@ router.post('/reminders', async (req, res) => {
     // If caseId is not directly passed but clientName is passed, try to link with client's active case
     if (!parsedCaseId && clientName) {
       const [matchedCase] = await query(
-        `SELECT c.ID FROM CaseMaster c 
-         LEFT JOIN ClientMaster cl ON c.ClientId = cl.ID 
+        `SELECT c.ID FROM casemaster c 
+         LEFT JOIN clientmaster cl ON c.ClientId = cl.ID 
          WHERE cl.ClientName LIKE ? OR c.CaseNo LIKE ? LIMIT 1`,
         [`%${clientName.trim()}%`, `%${clientName.trim()}%`]
       )
@@ -399,7 +409,7 @@ router.post('/reminders', async (req, res) => {
     }
 
     const result = await query(
-      `INSERT INTO CaseNext (CaseId, NextDate, \`For\`, CourtName, PPName, OtherAc) VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO casenext (CaseId, NextDate, \`For\`, CourtName, PPName, OtherAc) VALUES (?, ?, ?, ?, ?, ?)`,
       [parsedCaseId, dateVal, stageVal, courtName || '', ppName || '', notesVal]
     )
 
@@ -429,7 +439,7 @@ router.post('/reminders', async (req, res) => {
 router.put('/reminders/:id', async (req, res) => {
   try {
     const { id } = req.params
-    const [existing] = await query('SELECT * FROM CaseNext WHERE ID = ?', [id])
+    const [existing] = await query('SELECT * FROM casenext WHERE ID = ?', [id])
     if (!existing) {
       return res.status(404).json({ error: 'Reminder not found' })
     }
@@ -441,7 +451,7 @@ router.put('/reminders/:id', async (req, res) => {
     const notesVal = req.body.otherAc !== undefined ? req.body.otherAc : (req.body.notes !== undefined ? req.body.notes : existing.OtherAc)
 
     await query(
-      'UPDATE CaseNext SET NextDate = ?, `For` = ?, CourtName = ?, PPName = ?, OtherAc = ? WHERE ID = ?',
+      'UPDATE casenext SET NextDate = ?, `For` = ?, CourtName = ?, PPName = ?, OtherAc = ? WHERE ID = ?',
       [dateVal || '', stageVal || '', courtVal || '', ppVal || '', notesVal || '', id]
     )
 
@@ -471,7 +481,7 @@ router.put('/reminders/:id', async (req, res) => {
 router.delete('/reminders/:id', async (req, res) => {
   try {
     const { id } = req.params
-    const result = await query('DELETE FROM CaseNext WHERE ID = ?', [id])
+    const result = await query('DELETE FROM casenext WHERE ID = ?', [id])
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Reminder not found' })
     }
@@ -489,8 +499,8 @@ router.get('/bills', async (req, res) => {
   try {
     const sql = `
       SELECT b.*, cl.ClientName
-      FROM Billing b
-      LEFT JOIN ClientMaster cl ON b.ClientId = cl.ID
+      FROM billing b
+      LEFT JOIN clientmaster cl ON b.ClientId = cl.ID
       ORDER BY b.ID DESC
     `
     const rows = await query(sql)
@@ -527,7 +537,7 @@ router.post('/bills', async (req, res) => {
     const detailsVal = particulars || details || ''
 
     const result = await query(
-      'INSERT INTO Billing (ClientId, BillingDate, Amount, Details) VALUES (?, ?, ?, ?)',
+      'INSERT INTO billing (ClientId, BillingDate, Amount, Details) VALUES (?, ?, ?, ?)',
       [parsedClientId, dateVal, amountVal, detailsVal]
     )
 
@@ -550,7 +560,7 @@ router.post('/bills', async (req, res) => {
 router.delete('/bills/:id', async (req, res) => {
   try {
     const { id } = req.params
-    await query('DELETE FROM Billing WHERE ID = ?', [id])
+    await query('DELETE FROM billing WHERE ID = ?', [id])
     res.json({ success: true, id })
   } catch (err) {
     console.error('Error deleting bill:', err)
@@ -565,8 +575,8 @@ router.get('/payments', async (req, res) => {
   try {
     const sql = `
       SELECT p.*, cl.ClientName
-      FROM Payment p
-      LEFT JOIN ClientMaster cl ON p.ClientId = cl.ID
+      FROM payment p
+      LEFT JOIN clientmaster cl ON p.ClientId = cl.ID
       ORDER BY p.ID DESC
     `
     const rows = await query(sql)
@@ -603,7 +613,7 @@ router.post('/payments', async (req, res) => {
     if (parsedClientId && amountVal > 0) {
       const existing = await query(
         `SELECT ID, ClientId, PaymentDate, Amount, Details 
-         FROM Payment 
+         FROM payment 
          WHERE ClientId = ? AND PaymentDate = ? AND Amount = ? 
            AND created_at >= NOW() - INTERVAL 5 SECOND
          ORDER BY ID DESC LIMIT 1`,
@@ -625,7 +635,7 @@ router.post('/payments', async (req, res) => {
     }
 
     const result = await query(
-      'INSERT INTO Payment (ClientId, PaymentDate, Amount, Details) VALUES (?, ?, ?, ?)',
+      'INSERT INTO payment (ClientId, PaymentDate, Amount, Details) VALUES (?, ?, ?, ?)',
       [parsedClientId, dateVal, amountVal, detailsVal]
     )
 
@@ -674,7 +684,7 @@ router.put('/payments/:id', async (req, res) => {
 
     if (updates.length > 0) {
       params.push(numericId)
-      await query(`UPDATE Payment SET ${updates.join(', ')} WHERE ID = ?`, params)
+      await query(`UPDATE payment SET ${updates.join(', ')} WHERE ID = ?`, params)
     }
 
     res.json({ success: true, id: String(numericId) })
@@ -688,7 +698,7 @@ router.delete('/payments/:id', async (req, res) => {
   try {
     const { id } = req.params
     const numericId = parseInt(String(id).replace(/\D/g, ''), 10) || id
-    await query('DELETE FROM Payment WHERE ID = ?', [numericId])
+    await query('DELETE FROM payment WHERE ID = ?', [numericId])
     res.json({ success: true, id })
   } catch (err) {
     console.error('Error deleting payment:', err)
@@ -701,7 +711,7 @@ router.delete('/payments/:id', async (req, res) => {
 // =====================================================================
 router.get('/expense-heads', async (req, res) => {
   try {
-    const rows = await query('SELECT * FROM ExpenseHeadMaster ORDER BY ExpenseHead ASC')
+    const rows = await query('SELECT * FROM expenseheadmaster ORDER BY ExpenseHead ASC')
     const heads = rows.map((r) => ({
       id: String(r.ID),
       name: r.ExpenseHead || '',
@@ -721,7 +731,7 @@ router.post('/expense-heads', async (req, res) => {
     if (!headName) {
       return res.status(400).json({ error: 'Expense head name is required' })
     }
-    const result = await query('INSERT INTO ExpenseHeadMaster (ExpenseHead) VALUES (?)', [headName])
+    const result = await query('INSERT INTO expenseheadmaster (ExpenseHead) VALUES (?)', [headName])
     res.status(201).json({
       id: String(result.insertId),
       name: headName,
@@ -740,7 +750,7 @@ router.put('/expense-heads/:id', async (req, res) => {
     if (!headName) {
       return res.status(400).json({ error: 'Expense head name is required' })
     }
-    const result = await query('UPDATE ExpenseHeadMaster SET ExpenseHead = ? WHERE ID = ?', [headName, id])
+    const result = await query('UPDATE expenseheadmaster SET ExpenseHead = ? WHERE ID = ?', [headName, id])
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Expense head not found' })
     }
@@ -754,11 +764,11 @@ router.put('/expense-heads/:id', async (req, res) => {
 router.delete('/expense-heads/:id', async (req, res) => {
   try {
     const { id } = req.params
-    const [used] = await query('SELECT COUNT(*) as count FROM Expense WHERE ExpenseId = ?', [id])
+    const [used] = await query('SELECT COUNT(*) as count FROM expense WHERE ExpenseId = ?', [id])
     if (used && used.count > 0) {
       return res.status(400).json({ error: 'Cannot delete expense head linked to existing expenses' })
     }
-    const result = await query('DELETE FROM ExpenseHeadMaster WHERE ID = ?', [id])
+    const result = await query('DELETE FROM expenseheadmaster WHERE ID = ?', [id])
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Expense head not found' })
     }
@@ -773,8 +783,8 @@ router.get('/expenses', async (req, res) => {
   try {
     const sql = `
       SELECT e.*, ehm.ExpenseHead as HeadName
-      FROM Expense e
-      LEFT JOIN ExpenseHeadMaster ehm ON e.ExpenseId = ehm.ID
+      FROM expense e
+      LEFT JOIN expenseheadmaster ehm ON e.ExpenseId = ehm.ID
       ORDER BY e.ID DESC
     `
     const rows = await query(sql)
@@ -806,7 +816,7 @@ router.post('/expenses', async (req, res) => {
     const detailsVal = remarks || details || ''
 
     const result = await query(
-      'INSERT INTO Expense (ExpenseId, PaidTo, ExpenseDate, Amount, Details) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO expense (ExpenseId, PaidTo, ExpenseDate, Amount, Details) VALUES (?, ?, ?, ?, ?)',
       [parsedHeadId, paidTo || '', dateVal, amountVal, detailsVal]
     )
 
@@ -834,7 +844,7 @@ router.put('/expenses/:id', async (req, res) => {
     const detailsVal = remarks || details || ''
 
     const result = await query(
-      'UPDATE Expense SET ExpenseId = ?, PaidTo = ?, ExpenseDate = ?, Amount = ?, Details = ? WHERE ID = ?',
+      'UPDATE expense SET ExpenseId = ?, PaidTo = ?, ExpenseDate = ?, Amount = ?, Details = ? WHERE ID = ?',
       [parsedHeadId, paidTo || '', dateVal, amountVal, detailsVal, id]
     )
     if (result.affectedRows === 0) {
@@ -859,7 +869,7 @@ router.put('/expenses/:id', async (req, res) => {
 router.delete('/expenses/:id', async (req, res) => {
   try {
     const { id } = req.params
-    const result = await query('DELETE FROM Expense WHERE ID = ?', [id])
+    const result = await query('DELETE FROM expense WHERE ID = ?', [id])
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Expense not found' })
     }
@@ -875,7 +885,7 @@ router.delete('/expenses/:id', async (req, res) => {
 // =====================================================================
 router.get('/waiting-list', async (req, res) => {
   try {
-    const rows = await query('SELECT * FROM WaitingList ORDER BY ID ASC')
+    const rows = await query('SELECT * FROM waitinglist ORDER BY ID ASC')
     const list = rows.map((r) => ({
       id: String(r.ID),
       name: r.Name || '',
@@ -908,7 +918,7 @@ router.post('/waiting-list', async (req, res) => {
     const statusVal = status === 'In Consultation' ? 1 : status === 'Completed' ? 2 : 0
 
     const result = await query(
-      'INSERT INTO WaitingList (Name, Status, Address, PhoneNo, TimeSlot, ConsultancyType, QueueDate) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO waitinglist (Name, Status, Address, PhoneNo, TimeSlot, ConsultancyType, QueueDate) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [nameVal, statusVal, address || '', phoneVal, timeSlot || '', typeVal, dateVal]
     )
 
@@ -946,9 +956,9 @@ router.put('/waiting-list/:id', async (req, res) => {
     }
 
     if (consultancyType) {
-      await query('UPDATE WaitingList SET Status = ?, ConsultancyType = ? WHERE ID = ?', [statusVal, consultancyType, id])
+      await query('UPDATE waitinglist SET Status = ?, ConsultancyType = ? WHERE ID = ?', [statusVal, consultancyType, id])
     } else {
-      await query('UPDATE WaitingList SET Status = ? WHERE ID = ?', [statusVal, id])
+      await query('UPDATE waitinglist SET Status = ? WHERE ID = ?', [statusVal, id])
     }
 
     res.json({ id, status, statusVal })
@@ -961,7 +971,7 @@ router.put('/waiting-list/:id', async (req, res) => {
 router.delete('/waiting-list/:id', async (req, res) => {
   try {
     const { id } = req.params
-    await query('DELETE FROM WaitingList WHERE ID = ?', [id])
+    await query('DELETE FROM waitinglist WHERE ID = ?', [id])
     res.json({ success: true, id })
   } catch (err) {
     console.error('Error deleting waiting list entry:', err)
@@ -974,7 +984,7 @@ router.delete('/waiting-list/:id', async (req, res) => {
 // =====================================================================
 router.get('/announcements', async (req, res) => {
   try {
-    const rows = await query('SELECT * FROM Announcements WHERE IsActive = 1 ORDER BY Priority DESC, ID DESC')
+    const rows = await query('SELECT * FROM announcements WHERE IsActive = 1 ORDER BY Priority DESC, ID DESC')
     const announcements = rows.map((r) => ({
       id: String(r.ID),
       headline: r.Headline || '',
@@ -1004,7 +1014,7 @@ router.post('/announcements', async (req, res) => {
     const dateVal = noticeDate || date || new Date().toISOString().split('T')[0]
 
     const result = await query(
-      'INSERT INTO Announcements (Headline, Message, Category, Priority, NoticeDate, IsActive) VALUES (?, ?, ?, ?, ?, 1)',
+      'INSERT INTO announcements (Headline, Message, Category, Priority, NoticeDate, IsActive) VALUES (?, ?, ?, ?, ?, 1)',
       [headVal, msgVal, catVal, prioVal, dateVal]
     )
 
@@ -1029,7 +1039,7 @@ router.post('/announcements', async (req, res) => {
 router.delete('/announcements/:id', async (req, res) => {
   try {
     const { id } = req.params
-    await query('DELETE FROM Announcements WHERE ID = ?', [id])
+    await query('DELETE FROM announcements WHERE ID = ?', [id])
     res.json({ success: true, id })
   } catch (err) {
     console.error('Error deleting announcement:', err)
@@ -1039,13 +1049,13 @@ router.delete('/announcements/:id', async (req, res) => {
 
 // =====================================================================
 // 9. DIRECT CONSULTANCY FEES APIS (NO CASE ID)
-// Pure chamber advice fees recorded directly in ClientMaster & Payment
+// Pure chamber advice fees recorded directly in clientmaster & payment
 // =====================================================================
 router.get('/consultancy-fees', async (req, res) => {
   try {
     const rows = await query(`
       SELECT ID, ClientName, So, Address, PhoneNo, RefName, RefPhNo, ConFees, ClientDate, created_at
-      FROM ClientMaster
+      FROM clientmaster
       WHERE ConFees > 0
       ORDER BY ID DESC
     `)
@@ -1079,7 +1089,7 @@ router.post('/consultancy-fees', async (req, res) => {
     // Duplicate check: Same clientName & amount within 5 seconds
     const [recent] = await query(
       `SELECT ID, ClientName, PhoneNo, ConFees, ClientDate 
-       FROM ClientMaster 
+       FROM clientmaster 
        WHERE ClientName = ? AND ConFees = ? 
          AND created_at >= NOW() - INTERVAL 5 SECOND
        ORDER BY ID DESC LIMIT 1`,
@@ -1100,17 +1110,17 @@ router.post('/consultancy-fees', async (req, res) => {
       })
     }
 
-    // Insert into ClientMaster with ConFees
+    // Insert into clientmaster with ConFees
     const result = await query(
-      `INSERT INTO ClientMaster (ClientName, PhoneNo, ConFees, ClientDate, RefName, Address)
+      `INSERT INTO clientmaster (ClientName, PhoneNo, ConFees, ClientDate, RefName, Address)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [clientName, phone || '', amountVal, dateVal, modeVal, remarksVal]
     )
     const newDbId = result.insertId
 
-    // Record in Payment table for practice financials & collection reports
+    // Record in payment table for practice financials & collection reports
     await query(
-      `INSERT INTO Payment (ClientId, PaymentDate, Amount, Details)
+      `INSERT INTO payment (ClientId, PaymentDate, Amount, Details)
        VALUES (?, ?, ?, ?)`,
       [newDbId, dateVal, amountVal, `Consultancy Fee (Direct Advice): ${remarksVal || modeVal}`]
     )
@@ -1149,16 +1159,16 @@ router.put('/consultancy-fees/:id', async (req, res) => {
 
     if (updates.length > 0) {
       params.push(dbId)
-      await query(`UPDATE ClientMaster SET ${updates.join(', ')} WHERE ID = ?`, params)
+      await query(`UPDATE clientmaster SET ${updates.join(', ')} WHERE ID = ?`, params)
 
-      // Synchronize Payment record
+      // Synchronize payment record
       if (amount !== undefined || consultationDate !== undefined) {
         const payUpdates = []
         const payParams = []
         if (amount !== undefined) { payUpdates.push('Amount = ?'); payParams.push(Number(amount)) }
         if (consultationDate !== undefined) { payUpdates.push('PaymentDate = ?'); payParams.push(consultationDate) }
         payParams.push(dbId)
-        await query(`UPDATE Payment SET ${payUpdates.join(', ')} WHERE ClientId = ? AND Details LIKE 'Consultancy Fee%'`, payParams)
+        await query(`UPDATE payment SET ${payUpdates.join(', ')} WHERE ClientId = ? AND Details LIKE 'Consultancy Fee%'`, payParams)
       }
     }
 
@@ -1173,8 +1183,8 @@ router.delete('/consultancy-fees/:id', async (req, res) => {
   try {
     const { id } = req.params
     const dbId = parseInt(String(id).replace(/\D/g, ''), 10) || id
-    await query('UPDATE ClientMaster SET ConFees = 0 WHERE ID = ?', [dbId])
-    await query(`DELETE FROM Payment WHERE ClientId = ? AND Details LIKE 'Consultancy Fee%'`, [dbId])
+    await query('UPDATE clientmaster SET ConFees = 0 WHERE ID = ?', [dbId])
+    await query(`DELETE FROM payment WHERE ClientId = ? AND Details LIKE 'Consultancy Fee%'`, [dbId])
     res.json({ success: true, id })
   } catch (err) {
     console.error('Error deleting consultancy fee:', err)
@@ -1446,36 +1456,36 @@ router.delete('/documents/:id', async (req, res) => {
 router.get('/sync', async (req, res) => {
   try {
     const [clientsRaw, casesRaw, remindersRaw, billsRaw, paymentsRaw, headsRaw, expensesRaw, waitingRaw, announcementsRaw] = await Promise.all([
-      query('SELECT * FROM ClientMaster ORDER BY ID DESC'),
+      query('SELECT * FROM clientmaster ORDER BY ID DESC'),
       query(`
         SELECT c.*, cl.ClientName, cl.PhoneNo as ClientPhone,
-          (SELECT NextDate FROM CaseNext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextDate,
-          (SELECT cn.For FROM CaseNext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextFor,
-          (SELECT cn.CourtName FROM CaseNext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextCourt
-        FROM CaseMaster c
-        LEFT JOIN ClientMaster cl ON c.ClientId = cl.ID
+          (SELECT NextDate FROM casenext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextDate,
+          (SELECT cn.For FROM casenext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextFor,
+          (SELECT cn.CourtName FROM casenext cn WHERE cn.CaseId = c.ID ORDER BY cn.ID DESC LIMIT 1) as NextCourt
+        FROM casemaster c
+        LEFT JOIN clientmaster cl ON c.ClientId = cl.ID
         ORDER BY c.ID DESC
       `),
       query(`
         SELECT cn.*, c.CaseNo, c.VersusName, cl.ClientName, cl.PhoneNo
-        FROM CaseNext cn
-        LEFT JOIN CaseMaster c ON cn.CaseId = c.ID
-        LEFT JOIN ClientMaster cl ON c.ClientId = cl.ID
+        FROM casenext cn
+        LEFT JOIN casemaster c ON cn.CaseId = c.ID
+        LEFT JOIN clientmaster cl ON c.ClientId = cl.ID
         ORDER BY cn.ID DESC
         LIMIT 300
       `),
-      query('SELECT b.*, cl.ClientName FROM Billing b LEFT JOIN ClientMaster cl ON b.ClientId = cl.ID ORDER BY b.ID DESC LIMIT 300'),
-      query('SELECT p.*, cl.ClientName FROM Payment p LEFT JOIN ClientMaster cl ON p.ClientId = cl.ID ORDER BY p.ID DESC LIMIT 300'),
-      query('SELECT * FROM ExpenseHeadMaster ORDER BY ExpenseHead ASC'),
+      query('SELECT b.*, cl.ClientName FROM billing b LEFT JOIN clientmaster cl ON b.ClientId = cl.ID ORDER BY b.ID DESC LIMIT 300'),
+      query('SELECT p.*, cl.ClientName FROM payment p LEFT JOIN clientmaster cl ON p.ClientId = cl.ID ORDER BY p.ID DESC LIMIT 300'),
+      query('SELECT * FROM expenseheadmaster ORDER BY ExpenseHead ASC'),
       query(`
         SELECT e.*, ehm.ExpenseHead as HeadName
-        FROM Expense e
-        LEFT JOIN ExpenseHeadMaster ehm ON e.ExpenseId = ehm.ID
+        FROM expense e
+        LEFT JOIN expenseheadmaster ehm ON e.ExpenseId = ehm.ID
         ORDER BY e.ID DESC
         LIMIT 300
       `),
-      query('SELECT * FROM WaitingList ORDER BY ID ASC'),
-      query('SELECT * FROM Announcements WHERE IsActive = 1 ORDER BY Priority DESC, ID DESC')
+      query('SELECT * FROM waitinglist ORDER BY ID ASC'),
+      query('SELECT * FROM announcements WHERE IsActive = 1 ORDER BY Priority DESC, ID DESC')
     ])
 
     const clients = clientsRaw.map((r) => ({
@@ -1677,11 +1687,11 @@ router.get('/sync', async (req, res) => {
 // =====================================================================
 router.get('/overview', async (req, res) => {
   try {
-    const [clientRow] = await query('SELECT COUNT(*) as count, COALESCE(SUM(ConFees), 0) as totalConFees FROM ClientMaster')
-    const [caseRow] = await query('SELECT COUNT(*) as count FROM CaseMaster')
-    const [billingRow] = await query('SELECT COALESCE(SUM(Amount), 0) as totalBilling FROM Billing')
-    const [paymentRow] = await query('SELECT COALESCE(SUM(Amount), 0) as totalPayment FROM Payment')
-    const [expenseRow] = await query('SELECT COALESCE(SUM(Amount), 0) as totalExpense FROM Expense')
+    const [clientRow] = await query('SELECT COUNT(*) as count, COALESCE(SUM(ConFees), 0) as totalConFees FROM clientmaster')
+    const [caseRow] = await query('SELECT COUNT(*) as count FROM casemaster')
+    const [billingRow] = await query('SELECT COALESCE(SUM(Amount), 0) as totalBilling FROM billing')
+    const [paymentRow] = await query('SELECT COALESCE(SUM(Amount), 0) as totalPayment FROM payment')
+    const [expenseRow] = await query('SELECT COALESCE(SUM(Amount), 0) as totalExpense FROM expense')
 
     res.json({
       success: true,

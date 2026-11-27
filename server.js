@@ -129,8 +129,9 @@ if (require.main === module) {
       if (db) {
         const [rows] = await db.query('SELECT 1 AS connected')
         const [dbInfo] = await db.query('SELECT DATABASE() AS currentDb')
-        const currentDb = dbInfo && dbInfo[0] ? dbInfo[0].currentDb : (process.env.DB_NAME || 'legalcase_db')
-        console.log(`MySQL Database '${currentDb}' connected successfully on ${process.env.DB_HOST || 'localhost'}:${process.env.DB_PORT || 3306}`)
+        const currentDb = dbInfo && dbInfo[0] ? dbInfo[0].currentDb : (process.env.DB_NAME || 'railway')
+        const connHost = process.env.MYSQL_URL ? 'Live Railway (reseau.proxy.rlwy.net)' : `${process.env.DB_HOST || 'localhost'}:${process.env.DB_PORT || 3306}`
+        console.log(`MySQL Database '${currentDb}' connected successfully via ${connHost}`)
       }
     } catch (err) {
       console.error('MySQL Database connection error:', err.message)
