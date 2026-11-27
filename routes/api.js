@@ -76,12 +76,15 @@ router.get('/clients', async (req, res) => {
 router.post('/clients', async (req, res) => {
   try {
     const { name, relation, address, phone, referenceName, referencePhone, fees, date } = req.body
-    const result = await query(
-      'INSERT INTO clientmaster (ClientName, So, Address, PhoneNo, RefName, RefPhNo, ConFees, ClientDate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [name || '', relation || '', address || '', phone || '', referenceName || '', referencePhone || '', Number(fees || 0), date || '']
+    const [maxRow] = await query('SELECT COALESCE(MAX(ID), 0) + 1 AS nextId FROM clientmaster')
+    const nextId = maxRow ? maxRow.nextId : 1
+
+    await query(
+      'INSERT INTO clientmaster (ID, ClientName, So, Address, PhoneNo, RefName, RefPhNo, ConFees, ClientDate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [nextId, name || '', relation || '', address || '', phone || '', referenceName || '', referencePhone || '', Number(fees || 0), date || '']
     )
     const newClient = {
-      id: String(result.insertId),
+      id: String(nextId),
       name: name || '',
       relation: relation || '',
       address: address || '',
@@ -100,13 +103,16 @@ router.post('/clients', async (req, res) => {
 
 router.put('/clients/:id', async (req, res) => {
   try {
-    const { id } = req.params
+    const numericId = parseInt(String(req.params.id).replace(/\D/g, ''), 10)
+    if (!numericId) {
+      return res.status(400).json({ error: 'Invalid client ID' })
+    }
     const { name, relation, address, phone, referenceName, referencePhone, fees, date } = req.body
     await query(
       'UPDATE clientmaster SET ClientName = ?, So = ?, Address = ?, PhoneNo = ?, RefName = ?, RefPhNo = ?, ConFees = ?, ClientDate = ? WHERE ID = ?',
-      [name || '', relation || '', address || '', phone || '', referenceName || '', referencePhone || '', Number(fees || 0), date || '', id]
+      [name || '', relation || '', address || '', phone || '', referenceName || '', referencePhone || '', Number(fees || 0), date || '', numericId]
     )
-    res.json({ id, name, relation, address, phone, referenceName, referencePhone, fees: Number(fees || 0), date })
+    res.json({ id: String(numericId), name, relation, address, phone, referenceName, referencePhone, fees: Number(fees || 0), date })
   } catch (err) {
     console.error('Error updating client:', err)
     res.status(500).json({ error: 'Failed to update client' })
@@ -115,9 +121,12 @@ router.put('/clients/:id', async (req, res) => {
 
 router.delete('/clients/:id', async (req, res) => {
   try {
-    const { id } = req.params
-    await query('DELETE FROM clientmaster WHERE ID = ?', [id])
-    res.json({ success: true, id })
+    const numericId = parseInt(String(req.params.id).replace(/\D/g, ''), 10)
+    if (!numericId) {
+      return res.status(400).json({ error: 'Invalid client ID' })
+    }
+    await query('DELETE FROM clientmaster WHERE ID = ?', [numericId])
+    res.json({ success: true, id: String(numericId) })
   } catch (err) {
     console.error('Error deleting client:', err)
     res.status(500).json({ error: 'Failed to delete client' })
@@ -530,11 +539,15 @@ router.get('/bills', async (req, res) => {
 
 router.post('/bills', async (req, res) => {
   try {
-    const { clientId, date, billingDate, amount, totalAmount, particulars, details } = req.body
+    const {
+      clientId, date, billingDate, billDate,
+      amount, totalAmount, totalBillAmount,
+      particulars, details, description, remarks
+    } = req.body
     const parsedClientId = clientId ? parseInt(String(clientId).replace(/\D/g, ''), 10) || null : null
-    const dateVal = billingDate || date || new Date().toISOString().split('T')[0]
-    const amountVal = Number(amount || totalAmount || 0)
-    const detailsVal = particulars || details || ''
+    const dateVal = billDate || billingDate || date || new Date().toISOString().split('T')[0]
+    const amountVal = Number(amount || totalAmount || totalBillAmount || 0)
+    const detailsVal = particulars || details || description || remarks || ''
 
     const result = await query(
       'INSERT INTO billing (ClientId, BillingDate, Amount, Details) VALUES (?, ?, ?, ?)',
@@ -543,13 +556,18 @@ router.post('/bills', async (req, res) => {
 
     res.status(201).json({
       id: String(result.insertId),
+      billNumber: `BILL-${result.insertId}`,
+      billNo: String(result.insertId),
       clientId: parsedClientId ? String(parsedClientId) : '',
       date: dateVal,
       billingDate: dateVal,
+      billDate: dateVal,
       amount: amountVal,
       totalAmount: amountVal,
+      totalBillAmount: amountVal,
       particulars: detailsVal,
       details: detailsVal,
+      description: detailsVal,
     })
   } catch (err) {
     console.error('Error saving bill:', err)
@@ -557,11 +575,57 @@ router.post('/bills', async (req, res) => {
   }
 })
 
+router.put('/bills/:id', async (req, res) => {
+  try {
+    const numericId = parseInt(String(req.params.id).replace(/\D/g, ''), 10)
+    if (!numericId) {
+      return res.status(400).json({ error: 'Invalid bill ID' })
+    }
+
+    const {
+      clientId, date, billingDate, billDate,
+      amount, totalAmount, totalBillAmount,
+      particulars, details, description, remarks
+    } = req.body
+
+    const parsedClientId = clientId ? parseInt(String(clientId).replace(/\D/g, ''), 10) || null : null
+    const dateVal = billDate || billingDate || date || new Date().toISOString().split('T')[0]
+    const amountVal = Number(amount || totalAmount || totalBillAmount || 0)
+    const detailsVal = particulars || details || description || remarks || ''
+
+    await query(
+      'UPDATE billing SET ClientId = ?, BillingDate = ?, Amount = ?, Details = ? WHERE ID = ?',
+      [parsedClientId, dateVal, amountVal, detailsVal, numericId]
+    )
+
+    res.json({
+      id: String(numericId),
+      billNumber: `BILL-${numericId}`,
+      clientId: parsedClientId ? String(parsedClientId) : '',
+      date: dateVal,
+      billingDate: dateVal,
+      billDate: dateVal,
+      amount: amountVal,
+      totalAmount: amountVal,
+      totalBillAmount: amountVal,
+      particulars: detailsVal,
+      details: detailsVal,
+      description: detailsVal,
+    })
+  } catch (err) {
+    console.error('Error updating bill:', err)
+    res.status(500).json({ error: 'Failed to update bill' })
+  }
+})
+
 router.delete('/bills/:id', async (req, res) => {
   try {
-    const { id } = req.params
-    await query('DELETE FROM billing WHERE ID = ?', [id])
-    res.json({ success: true, id })
+    const numericId = parseInt(String(req.params.id).replace(/\D/g, ''), 10)
+    if (!numericId) {
+      return res.status(400).json({ error: 'Invalid bill ID' })
+    }
+    await query('DELETE FROM billing WHERE ID = ?', [numericId])
+    res.json({ success: true, id: String(numericId) })
   } catch (err) {
     console.error('Error deleting bill:', err)
     res.status(500).json({ error: 'Failed to delete bill' })
@@ -883,6 +947,9 @@ router.delete('/expenses/:id', async (req, res) => {
 // =====================================================================
 // 7. WAITING LIST & CONSULTATION QUEUE APIS (Chamber & TV Display)
 // =====================================================================
+// In-memory recall timestamp map for cross-device TV Display recall sync
+const recallTimestamps = new Map()
+
 router.get('/waiting-list', async (req, res) => {
   try {
     const rows = await query('SELECT * FROM waitinglist ORDER BY ID ASC')
@@ -899,6 +966,7 @@ router.get('/waiting-list', async (req, res) => {
       consultancyType: r.ConsultancyType || 'Conference',
       date: r.QueueDate || '',
       queueDate: r.QueueDate || '',
+      recalledAt: recallTimestamps.get(String(r.ID)) || null,
       createdAt: r.created_at,
     }))
     res.json(list)
@@ -906,6 +974,13 @@ router.get('/waiting-list', async (req, res) => {
     console.error('Error fetching waiting list:', err)
     res.status(500).json({ error: 'Failed to fetch waiting list' })
   }
+})
+
+router.post('/waiting-list/:id/recall', (req, res) => {
+  const { id } = req.params
+  const ts = Date.now()
+  recallTimestamps.set(String(id), ts)
+  res.json({ success: true, id: String(id), recalledAt: ts })
 })
 
 router.post('/waiting-list', async (req, res) => {
@@ -945,20 +1020,72 @@ router.post('/waiting-list', async (req, res) => {
 router.put('/waiting-list/:id', async (req, res) => {
   try {
     const { id } = req.params
-    const { status, consultancyType, timeSlot } = req.body
-    let statusVal = 0
-    if (typeof status === 'number') {
-      statusVal = status
-    } else if (status === 'In Consultation') {
-      statusVal = 1
-    } else if (status === 'Completed') {
-      statusVal = 2
+    const {
+      name,
+      clientName,
+      status,
+      address,
+      phoneNo,
+      mobile,
+      timeSlot,
+      consultancyType,
+      date,
+      queueDate,
+    } = req.body
+
+    const updates = []
+    const params = []
+
+    const nameVal = name !== undefined ? name : clientName
+    if (nameVal !== undefined) {
+      updates.push('Name = ?')
+      params.push(String(nameVal).trim())
     }
 
-    if (consultancyType) {
-      await query('UPDATE waitinglist SET Status = ?, ConsultancyType = ? WHERE ID = ?', [statusVal, consultancyType, id])
-    } else {
-      await query('UPDATE waitinglist SET Status = ? WHERE ID = ?', [statusVal, id])
+    let statusVal
+    if (status !== undefined) {
+      statusVal = 0
+      if (typeof status === 'number') {
+        statusVal = status
+      } else if (status === 'In Consultation') {
+        statusVal = 1
+      } else if (status === 'Completed') {
+        statusVal = 2
+      }
+      updates.push('Status = ?')
+      params.push(statusVal)
+    }
+
+    if (address !== undefined) {
+      updates.push('Address = ?')
+      params.push(address || '')
+    }
+
+    const phoneVal = phoneNo !== undefined ? phoneNo : mobile
+    if (phoneVal !== undefined) {
+      updates.push('PhoneNo = ?')
+      params.push(phoneVal || '')
+    }
+
+    if (timeSlot !== undefined) {
+      updates.push('TimeSlot = ?')
+      params.push(timeSlot || '')
+    }
+
+    if (consultancyType !== undefined) {
+      updates.push('ConsultancyType = ?')
+      params.push(consultancyType || 'Conference')
+    }
+
+    const dateVal = queueDate !== undefined ? queueDate : date
+    if (dateVal !== undefined) {
+      updates.push('QueueDate = ?')
+      params.push(dateVal || '')
+    }
+
+    if (updates.length > 0) {
+      params.push(id)
+      await query(`UPDATE waitinglist SET ${updates.join(', ')} WHERE ID = ?`, params)
     }
 
     res.json({ id, status, statusVal })

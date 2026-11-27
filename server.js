@@ -12,7 +12,16 @@ try {
 }
 
 const app = express()
+app.set('etag', false)
 const PORT = process.env.PORT || 5000
+
+// Disable caching on all API routes so live polling never receives stale 304 responses
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  res.set('Pragma', 'no-cache')
+  res.set('Expires', '0')
+  next()
+})
 
 // JSON request parsing (with 50MB payload limit for file attachments)
 app.use(express.json({ limit: '50mb' }))
